@@ -52,7 +52,9 @@ using namespace std;                            // cout
 // METHOD 3: RTM
 //
 
-#define METHOD              0                   // METHOD
+// Method = 2 - HLE testAndTestAndSet
+// Method = 3 - RTM
+#define METHOD              3                   // METHOD
 //#define MOVENODE                              // move node rather than content
 #define PREFILL             0                   // pre-fill with odd integers 0 .. maxKey-1 => 0: perfect 1: right list 2: left list
 
@@ -291,8 +293,13 @@ public:
 
 private:                                                    // private
 
-#if METHOD == 1
+#if METHOD == 1 || METHOD == 2
     ALIGN(64) volatile long lock;                           // lock
+#elif METHOD == 2
+
+#elif METHOD == 3
+
+
 #endif
 
     int addTSX(Node*);                                      // add key into tree {joj 25/11/15}
@@ -322,8 +329,11 @@ BST::BST(UINT nt)  {                                                    //
         PT(this, thread)->thread = thread;                              //
     root = NULL;                                                        //
 
-#if METHOD == 1
+#if METHOD == 1 || METHOD == 2
     lock = 0;
+#elif METHOD == 3
+
+
 #endif
 
 }
@@ -402,6 +412,8 @@ BST::~BST() {
 int BST::contains(INT64 key) {
     
     PerThreadData *pt = (PerThreadData*)TLSGETVALUE(tlsPtIndx);
+    Node *p = root;
+    STAT4(UINT64 d = 0);
 
 #if METHOD == 1
     while (_InterlockedExchange(&lock, 1)) {
@@ -409,10 +421,19 @@ int BST::contains(INT64 key) {
             _mm_pause();
         } while (lock);
     }
-#endif
 
-    Node *p = root;
-    STAT4(UINT64 d = 0);
+#elif METHOD == 2
+    while (_InterlockedExchange_HLEAcquire(&lock, 1)) {
+        do {
+            _mm_pause();
+        } while (lock);
+    }
+
+#elif METHOD == 3
+    while(1){
+        int status = _xbegin();
+        if(status == _XBEGIN_STARTED){
+#endif
     while (p) {
         STAT4(d++);
         if (key < p->key) {
@@ -422,14 +443,28 @@ int BST::contains(INT64 key) {
         } else {
 #if METHOD == 1
             lock = 0;
+#elif METHOD == 2
+            _Store_HLERelease(&lock, 0);
+#elif METHOD == 3
+            _xend();
 #endif
             STAT4(DSUM);
             return 1;
+#if METHOD == 3
+        }
+        }
+    _xend();
+    break;
+#endif   
         }
     }
 
 #if METHOD == 1
     lock = 0;
+#elif METHOD == 2
+    _Store_HLERelease(&lock, 0);
+#elif METHOD == 3
+
 #endif
     STAT4(DSUM);
     return 0;
@@ -446,6 +481,9 @@ int BST::contains(INT64 key) {
 int BST::addTSX(Node *n) {
 
     PerThreadData *pt = (PerThreadData*)TLSGETVALUE(tlsPtIndx);
+    Node* volatile *pp = &root;
+    Node *p = root;
+    STAT4(UINT64 d = 0);
 
 #if METHOD == 1
     while (_InterlockedExchange(&lock, 1)) {
@@ -453,11 +491,20 @@ int BST::addTSX(Node *n) {
             _mm_pause();
         } while (lock);
     }
+
+#elif METHOD == 2
+    while (_InterlockedExchange_HLEAcquire(&lock, 1)) {
+        do {
+            _mm_pause();
+        } while (lock);
+    }
+#elif METHOD == 3
+    while(1){
+    int status = _xbegin();
+    if(status == _XBEGIN_STARTED){
+
 #endif
 
-    Node* volatile *pp = &root;
-    Node *p = root;
-    STAT4(UINT64 d = 0);
     while (p) {
         STAT4(d++);
         if (n->key < p->key) {
@@ -467,16 +514,32 @@ int BST::addTSX(Node *n) {
         } else {
 #if METHOD == 1
             lock = 0;
+
+#elif METHOD == 2
+            _Store_HLERelease(&lock, 0); 
+#elif METHOD == 3
+            _xend();
 #endif
             STAT4(DSUM);
             return 0;
         }
         p = *pp;
-    }
+    } 
 
     *pp = n;
 #if METHOD == 1
     lock = 0;
+    _Store_HLERelease(&lock, 0); 
+
+#elif METHOD == 2
+
+#elif METHOD == 3
+    _xend();
+    break;
+    }
+    }
+    
+
 #endif
     STAT4(DSUM);
     return 1;
@@ -493,6 +556,9 @@ int BST::addTSX(Node *n) {
 Node* BST::removeTSX(INT64 key) {
 
     PerThreadData *pt = (PerThreadData*)TLSGETVALUE(tlsPtIndx);
+    Node* volatile *pp = &root;
+    Node *p = root;
+    STAT4(UINT64 d = 0);
 
 #if METHOD == 1
     while (_InterlockedExchange(&lock, 1)) {
@@ -500,11 +566,21 @@ Node* BST::removeTSX(INT64 key) {
             _mm_pause();
         } while (lock);
     }
+
+
+#elif METHOD == 2
+    while (_InterlockedExchange_HLEAcquire(&lock, 1)) {
+        do {
+            _mm_pause();
+        } while (lock);
+    }
+#elif METHOD == 3
+    while(1){
+    int status = _xbegin();
+    if(status == _XBEGIN_STARTED){
+
 #endif
 
-    Node* volatile *pp = &root;
-    Node *p = root;
-    STAT4(UINT64 d = 0);
     while (p) {
         STAT4(d++);
         if (key < p->key) {
@@ -520,6 +596,10 @@ Node* BST::removeTSX(INT64 key) {
     if (p == NULL) {
 #if METHOD == 1
         lock = 0;
+#elif METHOD == 2
+        _Store_HLERelease(&lock, 0);
+#elif METHOD == 3
+        _xend();
 #endif
         STAT4(DSUM);
         return NULL;
@@ -554,6 +634,14 @@ Node* BST::removeTSX(INT64 key) {
 
 #if METHOD == 1
     lock = 0;
+#elif METHOD == 2
+    _Store_HLERelease(&lock, 0);
+#elif METHOD == 3
+    _xend();
+    break;
+    }
+    }
+
 #endif
     STAT4(DSUM);
     return  p;
@@ -907,6 +995,11 @@ void header() {
     cout << " BST [NO lock single thread ONLY]";
 #elif METHOD == 1
     cout << " BST [testAndTestAndSet lock]";
+
+#elif METHOD == 2
+    cout << " BST [HLE testAndTestAndSet lock]";
+#elif METHOD == 3
+    cout << " BST [RTM]";
 #endif
 
     cout << " NCPUS=" << ncpu << " RAM=" << (getPhysicalMemSz() + G - 1) / G << "GB ";
