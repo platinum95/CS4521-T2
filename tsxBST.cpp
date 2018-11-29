@@ -58,7 +58,7 @@ using namespace std;                            // cout
 //#define MOVENODE                              // move node rather than content
 #define PREFILL             0                   // pre-fill with odd integers 0 .. maxKey-1 => 0: perfect 1: right list 2: left list
 
-#define MAXATTEMPTS         5                   // Max number of RTM attempts before reverting to a lock
+#define MAXATTEMPTS         50                   // Max number of RTM attempts before reverting to a lock
 
 //
 // key
@@ -532,6 +532,7 @@ int BST::addTSX(Node *n) {
     uint16_t numAttempts = 0;
     // Loop to keep trying until we succeed
     while(1){
+        STAT4(d = 0);
         int status = 0;
         // Use RTM if we haven't exceeded max attempts
         if( numAttempts <= MAXATTEMPTS ){
@@ -642,6 +643,7 @@ Node* BST::removeTSX(INT64 key) {
     uint16_t numAttempts = 0;
     // Loop to keep trying until we succeed
     while(1){
+        STAT4(d = 0);
         int status = 0;
         // Use RTM if we haven't exceeded max attempts
         if( numAttempts <= MAXATTEMPTS ){
