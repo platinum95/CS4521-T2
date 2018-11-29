@@ -58,6 +58,8 @@ using namespace std;                            // cout
 //#define MOVENODE                              // move node rather than content
 #define PREFILL             0                   // pre-fill with odd integers 0 .. maxKey-1 => 0: perfect 1: right list 2: left list
 
+#define MAXATTEMPTS         5                   // Max number of RTM attempts before reverting to a lock
+
 //
 // key
 //
@@ -293,13 +295,8 @@ public:
 
 private:                                                    // private
 
-#if METHOD == 1 || METHOD == 2
+#if METHOD > 0
     ALIGN(64) volatile long lock;                           // lock
-#elif METHOD == 2
-
-#elif METHOD == 3
-
-
 #endif
 
     int addTSX(Node*);                                      // add key into tree {joj 25/11/15}
@@ -329,11 +326,8 @@ BST::BST(UINT nt)  {                                                    //
         PT(this, thread)->thread = thread;                              //
     root = NULL;                                                        //
 
-#if METHOD == 1 || METHOD == 2
+#if METHOD > 0
     lock = 0;
-#elif METHOD == 3
-
-
 #endif
 
 }
@@ -430,8 +424,21 @@ int BST::contains(INT64 key) {
     }
 
 #elif METHOD == 3
+    uint16_t numAttempts = 0;
     while(1){
-        int status = _xbegin();
+        int status = 0;
+        if( numAttempts <= MAXATTEMPTS ){
+            status = _xbegin();
+        }else {
+            // Fallback to t&t&s lock
+            while (_InterlockedExchange(&lock, 1)) {
+                do {
+                    _mm_pause();
+                } while (lock);
+            }
+            // Set status so following if is passed
+            status = _XBEGIN_STARTED;
+        }
         if(status == _XBEGIN_STARTED){
 #endif
     while (p) {
@@ -446,18 +453,31 @@ int BST::contains(INT64 key) {
 #elif METHOD == 2
             _Store_HLERelease(&lock, 0);
 #elif METHOD == 3
-            _xend();
+            if( numAttempts <= MAXATTEMPTS ){
+                _xend();
+            }else {
+                lock = 0;
+            }
 #endif
             STAT4(DSUM);
             return 1;
 #if METHOD == 3
         }
         }
-    _xend();
+    if( numAttempts <= MAXATTEMPTS ){
+        _xend();
+    }else {
+        lock = 0;
+    }
     break;
-#endif   
+    }else{  // TX ABORT
+        numAttempts += 1;
+    }
+    }
+#else
         }
     }
+#endif
 
 #if METHOD == 1
     lock = 0;
@@ -499,10 +519,22 @@ int BST::addTSX(Node *n) {
         } while (lock);
     }
 #elif METHOD == 3
+    uint16_t numAttempts = 0;
     while(1){
-    int status = _xbegin();
-    if(status == _XBEGIN_STARTED){
-
+        int status = 0;
+        if( numAttempts <= MAXATTEMPTS ){
+            status = _xbegin();
+        }else {
+            // Fallback to t&t&s lock
+            while (_InterlockedExchange(&lock, 1)) {
+                do {
+                    _mm_pause();
+                } while (lock);
+            }
+            // Set status so following if is passed
+            status = _XBEGIN_STARTED;
+        }
+        if(status == _XBEGIN_STARTED){
 #endif
 
     while (p) {
@@ -518,7 +550,11 @@ int BST::addTSX(Node *n) {
 #elif METHOD == 2
             _Store_HLERelease(&lock, 0); 
 #elif METHOD == 3
-            _xend();
+            if( numAttempts <= MAXATTEMPTS ){
+                _xend();
+            }else {
+                lock = 0;
+            }
 #endif
             STAT4(DSUM);
             return 0;
@@ -529,13 +565,17 @@ int BST::addTSX(Node *n) {
     *pp = n;
 #if METHOD == 1
     lock = 0;
-    _Store_HLERelease(&lock, 0); 
-
 #elif METHOD == 2
-
+    _Store_HLERelease(&lock, 0); 
 #elif METHOD == 3
     _xend();
     break;
+    }else{
+        numAttempts++;
+    }
+    }
+
+#else
     }
     }
     
@@ -575,12 +615,23 @@ Node* BST::removeTSX(INT64 key) {
         } while (lock);
     }
 #elif METHOD == 3
+uint16_t numAttempts = 0;
     while(1){
-    int status = _xbegin();
-    if(status == _XBEGIN_STARTED){
-
+        int status = 0;
+        if( numAttempts <= MAXATTEMPTS ){
+            status = _xbegin();
+        }else {
+            // Fallback to t&t&s lock
+            while (_InterlockedExchange(&lock, 1)) {
+                do {
+                    _mm_pause();
+                } while (lock);
+            }
+            // Set status so following if is passed
+            status = _XBEGIN_STARTED;
+        }
+        if(status == _XBEGIN_STARTED){
 #endif
-
     while (p) {
         STAT4(d++);
         if (key < p->key) {
@@ -599,7 +650,11 @@ Node* BST::removeTSX(INT64 key) {
 #elif METHOD == 2
         _Store_HLERelease(&lock, 0);
 #elif METHOD == 3
-        _xend();
+        if( numAttempts <= MAXATTEMPTS ){
+            _xend();
+        }else {
+            lock = 0;
+        }
 #endif
         STAT4(DSUM);
         return NULL;
@@ -639,6 +694,8 @@ Node* BST::removeTSX(INT64 key) {
 #elif METHOD == 3
     _xend();
     break;
+    }else{
+        numAttempts += 1;
     }
     }
 
