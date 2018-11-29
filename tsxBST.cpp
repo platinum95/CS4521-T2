@@ -54,7 +54,7 @@ using namespace std;                            // cout
 
 // Method = 2 - HLE testAndTestAndSet
 // Method = 3 - RTM
-#define METHOD              3                   // METHOD
+#define METHOD              4                   // METHOD
 //#define MOVENODE                              // move node rather than content
 #define PREFILL             0                   // pre-fill with odd integers 0 .. maxKey-1 => 0: perfect 1: right list 2: left list
 
@@ -138,6 +138,7 @@ using namespace std;                            // cout
 
 #define PT(bst, thread)     ((PerThreadData*) ((BYTE*) ((bst)->perThreadData) + (thread)*ptDataSz))
 
+#define LOG_PT2( msg ) //std::cout << '\r' << std::flush << msg << '\r' << std::flush;
 //
 // global variables
 //
@@ -193,6 +194,13 @@ typedef struct {
     Node *free;                                 // head of free node list (RECYLENODES)
 } PerThreadData;
 
+struct pStat {
+    bool fin = false;
+    clock_t checkp;
+    const char * msg;
+};
+#define MAXTHREAD 64
+pStat pStats[ MAXTHREAD ];
 //
 // derive from ALIGNEDMA for aligned memory allocation
 //
@@ -293,12 +301,12 @@ public:
     void preFill();                                         //
 #endif
 
-private:                                                    // private
 
 #if METHOD > 0
     ALIGN(64) volatile long lock;                           // lock
 #endif
 
+private:                                                    // private
     int addTSX(Node*);                                      // add key into tree {joj 25/11/15}
     Node* removeTSX(INT64);                                 // remove key from tree {joj 25/11/15}
 
@@ -498,13 +506,13 @@ int BST::contains(INT64 key) {
 //
 // return 1 if key found
 //
+
 int BST::addTSX(Node *n) {
-
+    char msg[300];
     PerThreadData *pt = (PerThreadData*)TLSGETVALUE(tlsPtIndx);
-    Node* volatile *pp = &root;
-    Node *p = root;
     STAT4(UINT64 d = 0);
-
+    pStat &ps = pStats[ pt->thread ];
+    ps.msg = msg;
 #if METHOD == 1
     while (_InterlockedExchange(&lock, 1)) {
         do {
@@ -526,6 +534,7 @@ int BST::addTSX(Node *n) {
             status = _xbegin();
         }else {
             // Fallback to t&t&s lock
+            snprintf( msg, 100, "Waiting for lock\n" );
             while (_InterlockedExchange(&lock, 1)) {
                 do {
                     _mm_pause();
@@ -533,11 +542,16 @@ int BST::addTSX(Node *n) {
             }
             // Set status so following if is passed
             status = _XBEGIN_STARTED;
+            snprintf( msg, 100, "Got lock\n" );
         }
         if(status == _XBEGIN_STARTED){
 #endif
 
+    Node* volatile *pp = &root;
+    Node *p = root;
+    int lCnt = 0;
     while (p) {
+        snprintf( msg, 100, "In loop %i\n", lCnt++ );
         STAT4(d++);
         if (n->key < p->key) {
             pp = &p->left;
@@ -560,7 +574,8 @@ int BST::addTSX(Node *n) {
             return 0;
         }
         p = *pp;
-    } 
+    }
+    snprintf( msg, 300, "Finished loop\n" ); 
 
     *pp = n;
 #if METHOD == 1
@@ -568,17 +583,17 @@ int BST::addTSX(Node *n) {
 #elif METHOD == 2
     _Store_HLERelease(&lock, 0); 
 #elif METHOD == 3
-    _xend();
+    if( numAttempts <= MAXATTEMPTS ){
+        _xend();
+    }else {
+        lock = 0;
+    }
     break;
     }else{
+        snprintf( msg, 100, "Abort on attempt %i\n", numAttempts );
         numAttempts++;
     }
     }
-
-#else
-    }
-    }
-    
 
 #endif
     STAT4(DSUM);
@@ -594,12 +609,12 @@ int BST::addTSX(Node *n) {
 // return pointer to removed node, otherwise NULL
 //
 Node* BST::removeTSX(INT64 key) {
-
+    char msg[300];
     PerThreadData *pt = (PerThreadData*)TLSGETVALUE(tlsPtIndx);
-    Node* volatile *pp = &root;
-    Node *p = root;
     STAT4(UINT64 d = 0);
-
+    pStat &ps = pStats[ pt->thread ];
+    ps.msg = msg;
+    Node *p = root;
 #if METHOD == 1
     while (_InterlockedExchange(&lock, 1)) {
         do {
@@ -622,18 +637,24 @@ uint16_t numAttempts = 0;
             status = _xbegin();
         }else {
             // Fallback to t&t&s lock
+            snprintf( msg, 100, "REM Waiting on lock\n" );
             while (_InterlockedExchange(&lock, 1)) {
                 do {
                     _mm_pause();
                 } while (lock);
             }
+            snprintf( msg, 100, "REM Got lock\n" );
             // Set status so following if is passed
             status = _XBEGIN_STARTED;
         }
         if(status == _XBEGIN_STARTED){
 #endif
+    Node* volatile *pp = &root;
+    p = root;
+    int lCnt =0;
     while (p) {
         STAT4(d++);
+        snprintf( msg, 100, "REM In loop %i\n", lCnt++ );
         if (key < p->key) {
             pp = &p->left;
         } else if (key > p->key) {
@@ -655,6 +676,7 @@ uint16_t numAttempts = 0;
         }else {
             lock = 0;
         }
+        snprintf( msg, 100, "REM Not found, exiting\n" );
 #endif
         STAT4(DSUM);
         return NULL;
@@ -692,15 +714,22 @@ uint16_t numAttempts = 0;
 #elif METHOD == 2
     _Store_HLERelease(&lock, 0);
 #elif METHOD == 3
-    _xend();
+    if( numAttempts <= MAXATTEMPTS ){
+        _xend();
+    }else {
+        lock = 0;
+    }
+    snprintf( msg, 100, "REM Found and removed, breaking\n" );
     break;
     }else{
+        snprintf( msg, 100, "REM Abort\n" );
         numAttempts += 1;
     }
     }
 
 #endif
     STAT4(DSUM);
+    snprintf( msg, 100, "REM Exiting\n" );
     return  p;
 
 }
@@ -998,14 +1027,53 @@ WORKER worker(void* vthread) {
         for (int i = 0; i < NOP; i++) {
 
             UINT64 k = rand(r);
-
+            pStats[ pt->thread ].checkp = getWallClockMS();
 #if CONTAINS == 0
+#if METHOD == 4
+            uint16_t numAttempts = 0;
+            while(1){
+                int status = 0;
+                 if( numAttempts <= MAXATTEMPTS ){
+                     status = _xbegin();
+                 }else {
+                    // Fallback to t&t&s lock
+                    while (_InterlockedExchange(&bst->lock, 1)) {
+                      do {
+                          _mm_pause();
+                       } while (bst->lock);
+                    }
+                   // Set status so following if is passed
+                  status = _XBEGIN_STARTED;
+               }
+               if(status == _XBEGIN_STARTED){
+                   if( numAttempts <= MAXATTEMPTS && bst->lock )
+                       _xabort(0);
+                   INT64 key = k & (maxKey - 1);
+                   if (k >> 63) {
+                       bst->add(key);
+                   } else {
+                       bst->remove(key);
+                   }
+                   if( numAttempts <= MAXATTEMPTS )
+                       _xend();
+                    else
+                        bst->lock = 0;
+
+                   break;
+               }
+               else{
+                   numAttempts++;
+               }
+            }
+#else
+
             INT64 key = k & (maxKey - 1);
             if (k >> 63) {
                 bst->add(key);
             } else {
                 bst->remove(key);
             }
+#endif
 #else
             UINT op = k % 100;
             INT64 key = (k / 100) & (maxKey - 1);
@@ -1023,8 +1091,10 @@ WORKER worker(void* vthread) {
         //
         // check if runtime exceeded
         //
-        if (getWallClockMS() - t0 > NSECONDS*1000)
+        if (getWallClockMS() - t0 > NSECONDS*1000){
+            pStats[ pt->thread ].fin = true;
             break;
+        }
 
     }
 
@@ -1057,6 +1127,8 @@ void header() {
     cout << " BST [HLE testAndTestAndSet lock]";
 #elif METHOD == 3
     cout << " BST [RTM]";
+#elif METHOD == 4
+    cout << " BST [TEST RTM]";
 #endif
 
     cout << " NCPUS=" << ncpu << " RAM=" << (getPhysicalMemSz() + G - 1) / G << "GB ";
@@ -1091,6 +1163,7 @@ void header() {
 
 }
 
+#include <unistd.h>
 //
 // main
 //
@@ -1231,12 +1304,30 @@ int main(int argc, char* argv[]) {
                 //
                 // create worker threads
                 //
-                for (UINT thread = 0; thread < nt; thread++)
+                for (UINT thread = 0; thread < nt; thread++){
+                    pStats[ thread ].checkp = getWallClockMS();
+                    pStats[ thread ].fin = false;
                     createThread(&threadH[thread], worker, (void*) (UINT64) thread);
+                }
 
                 //
                 // wait for ALL worker threads to finish
                 //
+                while( 1 ){
+                    bool allDone = true, timeout = false;
+                    for (UINT thread = 0; thread < nt; thread++){
+                        Sleep( 2000 );
+                        if( pStats[ thread ].fin == true )
+                            continue;
+                        allDone = false;
+                        if ( getWallClockMS() - pStats[ thread ].checkp > 1 * 1000 ){
+                            std::cout << "Thread " << thread << " timeout. Msg: " << pStats[ thread ].msg << std::endl;
+                            timeout = true;
+                        }
+                    }
+                    if( allDone || timeout )
+                       break;
+                }
                 waitForThreadsToFinish(nt, threadH);
                 UINT64 rt = getWallClockMS() - t0;
 
